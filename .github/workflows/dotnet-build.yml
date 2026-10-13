@@ -1,4 +1,4 @@
-name: .NET Build Validation
+﻿name: .NET Build Validation
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,3 +25,4 @@ jobs:
 
       - name: Build TCP server
         run: dotnet build HospitalServer/HospitalServer.csproj
+
