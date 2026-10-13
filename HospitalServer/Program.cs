@@ -42,6 +42,8 @@ public sealed class HospitalTcpServer
             var json = Encoding.UTF8.GetString(payload);
             var request = JsonSerializer.Deserialize<PatientRequest>(json) ?? new PatientRequest();
 
+            Console.WriteLine($"[SERVER] Received request: Action={request.Action}, PatientsCount={request.Patients?.Count ?? 0}");
+
             ApiResponse response;
 
             switch (request.Action)
@@ -122,16 +124,19 @@ public sealed class HospitalTcpServer
                     break;
             }
 
+            Console.WriteLine($"[SERVER] Processing action: {request.Action}. Response success: {response.Success}. Message: {response.Message}");
+
             var payloadJson = JsonSerializer.Serialize(response);
             var payloadBytes = Encoding.UTF8.GetBytes(payloadJson);
             var header = BitConverter.GetBytes(payloadBytes.Length);
 
             await stream.WriteAsync(header, 0, header.Length);
             await stream.WriteAsync(payloadBytes, 0, payloadBytes.Length);
+            Console.WriteLine($"[SERVER] Sent response for {request.Action} to client.");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Exception: {ex.Message}");
+            Console.WriteLine($"[SERVER] Exception: {ex.Message}");
             try
             {
                 var errorResponse = new ApiResponse

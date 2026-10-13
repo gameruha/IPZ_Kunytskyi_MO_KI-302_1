@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
+using System.IO;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
@@ -12,18 +14,66 @@ namespace HospitalSystem
     {
         private const string ServerHost = "127.0.0.1";
         private const int ServerPort = 5000;
+        private readonly string _storagePath = Path.Combine(AppContext.BaseDirectory, "patients.json");
+        private readonly string _serverProjectPath = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "HospitalServer", "HospitalServer.csproj"));
 
         public ObservableCollection<Patient> Patients { get; } = new();
+
+        private static void LogClient(string message)
+        {
+            var logPath = Path.Combine(AppContext.BaseDirectory, "hospital-client.log");
+            var line = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {message}{Environment.NewLine}";
+
+            try
+            {
+                File.AppendAllText(logPath, line, Encoding.UTF8);
+            }
+            catch
+            {
+                // ignored
+            }
+
+            Debug.WriteLine(message);
+        }
 
         public MainWindow()
         {
             InitializeComponent();
-            LoadSamplePatients();
+            LogClient("[CLIENT] Application started.");
+            LoadPatientsFromStorage();
             PatientsDataGrid.ItemsSource = Patients;
+        }
+
+        private void LoadPatientsFromStorage()
+        {
+            if (File.Exists(_storagePath))
+            {
+                try
+                {
+                    var json = File.ReadAllText(_storagePath, Encoding.UTF8);
+                    var patients = JsonSerializer.Deserialize<List<Patient>>(json) ?? new List<Patient>();
+
+                    Patients.Clear();
+                    foreach (var patient in patients)
+                    {
+                        Patients.Add(patient);
+                    }
+
+                    return;
+                }
+                catch
+                {
+                }
+            }
+
+            LoadSamplePatients();
+            SavePatients();
         }
 
         private void LoadSamplePatients()
         {
+            Patients.Clear();
+
             Patients.Add(new Patient
             {
                 Id = 1,
@@ -55,6 +105,19 @@ namespace HospitalSystem
             });
         }
 
+        private void SavePatients()
+        {
+            try
+            {
+                var json = JsonSerializer.Serialize(Patients.ToList(), new JsonSerializerOptions { WriteIndented = true });
+                File.WriteAllText(_storagePath, json, Encoding.UTF8);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Не вдалося зберегти дані: {ex.Message}", "Помилка збереження", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        }
+
         private void AddPatientButton_Click(object sender, RoutedEventArgs e)
         {
             var newPatient = new Patient { Id = GetNextPatientId() };
@@ -63,6 +126,7 @@ namespace HospitalSystem
             if (patient != null)
             {
                 Patients.Add(patient);
+                SavePatients();
             }
         }
 
@@ -90,6 +154,7 @@ namespace HospitalSystem
             {
                 var index = Patients.IndexOf(selectedPatient);
                 Patients[index] = updatedPatient;
+                SavePatients();
             }
         }
 
@@ -110,6 +175,7 @@ namespace HospitalSystem
             if (result == MessageBoxResult.Yes)
             {
                 Patients.Remove(selectedPatient);
+                SavePatients();
             }
         }
 
@@ -127,6 +193,8 @@ namespace HospitalSystem
             {
                 Patients.Add(patient);
             }
+
+            SavePatients();
         }
 
         private async void SyncWithServerButton_Click(object sender, RoutedEventArgs e)
@@ -138,6 +206,7 @@ namespace HospitalSystem
                 return;
             }
 
+            SavePatients();
             MessageBox.Show("Синхронізація з сервером виконана успішно.", "Успішно", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
@@ -145,6 +214,29 @@ namespace HospitalSystem
         {
             try
             {
+                if (!await IsServerAvailableAsync())
+                {
+                    LogClient("[CLIENT] Server is unavailable. Attempting to start HospitalServer automatically.");
+                    if (!TryStartServer())
+                    {
+                        return new ApiResponse
+                        {
+                            Success = false,
+                            Message = "Сервер лікарні недоступний. Перевірте, що HospitalServer запущений або спробуйте ще раз."
+                        };
+                    }
+
+                    await Task.Delay(1500);
+                    if (!await IsServerAvailableAsync())
+                    {
+                        return new ApiResponse
+                        {
+                            Success = false,
+                            Message = "Сервер лікарні не запустився. Перевірте порт 5000 або запустіть HospitalServer вручну."
+                        };
+                    }
+                }
+
                 var request = new PatientRequest
                 {
                     Action = action,
@@ -152,8 +244,11 @@ namespace HospitalSystem
                     Patients = patients ?? new List<Patient>()
                 };
 
+                LogClient($"[CLIENT] Sending request: Action={action}, PatientsCount={request.Patients?.Count ?? 0}");
+
                 using var client = new TcpClient();
                 await client.ConnectAsync(ServerHost, ServerPort);
+                LogClient($"[CLIENT] Connected to server at {ServerHost}:{ServerPort}");
                 using var stream = client.GetStream();
 
                 var payload = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(request));
@@ -170,19 +265,69 @@ namespace HospitalSystem
                 await ReadExactlyAsync(stream, responseBytes, responseLength);
 
                 var json = Encoding.UTF8.GetString(responseBytes);
-                return JsonSerializer.Deserialize<ApiResponse>(json) ?? new ApiResponse
+                var response = JsonSerializer.Deserialize<ApiResponse>(json) ?? new ApiResponse
                 {
                     Success = false,
                     Message = "Server response could not be parsed."
                 };
+
+                LogClient($"[CLIENT] Response received: Success={response.Success}, Message={response.Message}");
+                return response;
             }
             catch (Exception ex)
             {
+                LogClient($"[CLIENT] Connection error: {ex.Message}");
                 return new ApiResponse
                 {
                     Success = false,
                     Message = $"Не вдалося з’єднатися з сервером: {ex.Message}"
                 };
+            }
+        }
+
+        private bool TryStartServer()
+        {
+            try
+            {
+                if (!File.Exists(_serverProjectPath))
+                {
+                    LogClient($"[CLIENT] Server project not found: {_serverProjectPath}");
+                    return false;
+                }
+
+                var startInfo = new ProcessStartInfo
+                {
+                    FileName = "dotnet",
+                    Arguments = $"run --project \"{_serverProjectPath}\"",
+                    WorkingDirectory = Path.GetDirectoryName(_serverProjectPath) ?? AppContext.BaseDirectory,
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true
+                };
+
+                Process.Start(startInfo);
+                LogClient("[CLIENT] Started HospitalServer process automatically.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                LogClient($"[CLIENT] Failed to start HospitalServer automatically: {ex.Message}");
+                return false;
+            }
+        }
+
+        private async Task<bool> IsServerAvailableAsync()
+        {
+            try
+            {
+                using var client = new TcpClient();
+                await client.ConnectAsync(ServerHost, ServerPort);
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 
