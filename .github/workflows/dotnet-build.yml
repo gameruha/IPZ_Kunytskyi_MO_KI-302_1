@@ -1,0 +1,27 @@
+name: .NET Build Validation
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build WPF client
+        run: dotnet build HospitalSystem/HospitalSystem.csproj
+
+      - name: Build TCP server
+        run: dotnet build HospitalServer/HospitalServer.csproj
