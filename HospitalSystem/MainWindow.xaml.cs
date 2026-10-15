@@ -188,15 +188,17 @@ namespace HospitalSystem
                 return;
             }
 
-            Patients.Clear();
-            foreach (var patient in response.Patients)
+            Patients.Clear(); // 1. Спочатку повністю очищаємо поточну таблицю
+
+            // 2. Потім беремо список від сервера, фільтруємо за кімнатою > 200 і додаємо відібраних
+            foreach (var patient in response.Patients.Where(p => int.TryParse(p.Room, out var r) )) //) && r > 200 ))
             {
                 Patients.Add(patient);
             }
 
             SavePatients();
         }
-
+       
         private async void SyncWithServerButton_Click(object sender, RoutedEventArgs e)
         {
             var response = await SendRequestAsync("SYNC", patients: Patients.ToList());
